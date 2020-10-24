@@ -2,11 +2,9 @@ package org.testcontainers.utility;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
-import lombok.AccessLevel;
 import lombok.Data;
 import lombok.Getter;
 import lombok.NonNull;
-import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import lombok.Synchronized;
 import lombok.extern.slf4j.Slf4j;
@@ -46,12 +44,11 @@ import java.util.stream.Stream;
  */
 @Data
 @Slf4j
-@RequiredArgsConstructor(access = AccessLevel.PRIVATE)
 public class TestcontainersConfiguration {
 
     private static String PROPERTIES_FILE_NAME = "testcontainers.properties";
 
-    private static File ENVIRONMENT_CONFIG_FILE = new File(System.getProperty("user.home"), "." + PROPERTIES_FILE_NAME);
+    private static File USER_CONFIG_FILE = new File(System.getProperty("user.home"), "." + PROPERTIES_FILE_NAME);
 
     private static final String AMBASSADOR_IMAGE = "richnorth/ambassador";
     private static final String SOCAT_IMAGE = "alpine/socat";
@@ -87,16 +84,14 @@ public class TestcontainersConfiguration {
         return (AtomicReference) (Object) instance;
     }
 
-    @Getter(AccessLevel.NONE)
-    private final Properties environmentProperties;
+    private final Properties userProperties;
+    private final Properties classpathProperties;
+    private final Map<String, String> environment;
 
-    private final Properties properties = new Properties();
-
-    TestcontainersConfiguration(Properties environmentProperties, Properties classpathProperties) {
-        this.environmentProperties = environmentProperties;
-
-        this.properties.putAll(classpathProperties);
-        this.properties.putAll(environmentProperties);
+    TestcontainersConfiguration(Properties userProperties, Properties classpathProperties, final Map<String, String> environment) {
+        this.userProperties = userProperties;
+        this.classpathProperties = classpathProperties;
+        this.environment = environment;
     }
 
     @Deprecated
@@ -149,6 +144,11 @@ public class TestcontainersConfiguration {
     }
 
     @Deprecated
+    public String getOracleImage() {
+        return getEnvVarOrUserProperty("oracle.container.image", null);
+    }
+
+    @Deprecated
     public String getPulsarImage() {
         return getImage(PULSAR_IMAGE).asCanonicalNameString();
     }
@@ -159,17 +159,17 @@ public class TestcontainersConfiguration {
     }
 
     public boolean isDisableChecks() {
-        return Boolean.parseBoolean(getEnvVarOrProperty("checks.disable", "false"));
+        return Boolean.parseBoolean(getEnvVarOrUserProperty("checks.disable", "false"));
     }
 
     @UnstableAPI
     public boolean environmentSupportsReuse() {
-        // specifically not supported as an environment variable
-        return Boolean.parseBoolean((String) environmentProperties.getOrDefault("testcontainers.reuse.enable", "false"));
+        // specifically not supported as an environment variable or classpath property
+        return Boolean.parseBoolean(getEnvVarOrUserProperty("testcontainers.reuse.enable", "false"));
     }
 
     public String getDockerClientStrategyClassName() {
-        return getEnvVarOrProperty("docker.client.strategy", null);
+        return getEnvVarOrUserProperty("docker.client.strategy", null);
     }
 
     public String getTransportType() {
@@ -180,47 +180,100 @@ public class TestcontainersConfiguration {
         return Integer.parseInt(getEnvVarOrProperty("pull.pause.timeout", "30"));
     }
 
+    @Nullable
+    @Contract("_, !null, _ -> !null")
+    private String getConfigurable(@NotNull final String propertyName, @Nullable final String defaultValue, Properties... propertiesSources) {
+        String envVarName = propertyName.replaceAll("\\.", "_").toUpperCase();
+        if (!envVarName.startsWith("TESTCONTAINERS_")) {
+            envVarName = "TESTCONTAINERS_" + envVarName;
+        }
+
+        if (environment.containsKey(envVarName)) {
+            return environment.get(envVarName);
+        }
+
+        for (final Properties properties : propertiesSources) {
+            if (properties.get(propertyName) != null) {
+                return (String) properties.get(propertyName);
+            }
+        }
+
+        return defaultValue;
+    }
+
     /**
      * Gets a configured setting from an environment variable (if present) or a configuration file property otherwise.
+     * The configuration file will be the <code>.testcontainers.properties</code> file in the user's home directory or
+     * a <code>testcontainers.properties</code> found on the classpath.
+     *
      * @param propertyName name of configuration file property (dot-separated lower case)
      * @return the found value, or null if not set
      */
     @Nullable
     @Contract("_, !null -> !null")
     public String getEnvVarOrProperty(@NotNull final String propertyName, @Nullable final String defaultValue) {
-        String envVarName = propertyName.replaceAll("\\.", "_").toUpperCase();
-        if (!propertyName.startsWith("TESTCONTAINERS_")) {
-            envVarName = "TESTCONTAINERS_" + envVarName;
-        }
+        return getConfigurable(propertyName, defaultValue, userProperties, classpathProperties);
+    }
 
-        if (System.getenv().get(envVarName) != null) {
-            return System.getenv().get(envVarName);
-        } else if (properties.get(propertyName) != null) {
-            return (String) properties.get(propertyName);
-        } else {
-            return defaultValue;
-        }
+    /**
+     * Gets a configured setting from an environment variable (if present) or a configuration file property otherwise.
+     * The configuration file will be the <code>.testcontainers.properties</code> file in the user's home directory.
+     *
+     * @param propertyName name of configuration file property (dot-separated lower case)
+     * @return the found value, or null if not set
+     */
+    @Nullable
+    @Contract("_, !null -> !null")
+    public String getEnvVarOrUserProperty(@NotNull final String propertyName, @Nullable final String defaultValue) {
+        return getConfigurable(propertyName, defaultValue, userProperties);
+    }
+
+    /**
+     * Gets a configured setting from a the user's configuration file.
+     * The configuration file will be the <code>.testcontainers.properties</code> file in the user's home directory.
+     *
+     * @param propertyName name of configuration file property (dot-separated lower case)
+     * @return the found value, or null if not set
+     */
+    @Nullable
+    @Contract("_, !null -> !null")
+    public String getUserProperty(@NotNull final String propertyName, @Nullable final String defaultValue) {
+        return getConfigurable(propertyName, defaultValue);
+    }
+
+    @Deprecated
+    public Properties getProperties() {
+        return Stream.of(userProperties, classpathProperties)
+            .reduce(new Properties(), (a, b) -> {
+                a.putAll(b);
+                return a;
+            });
+    }
+
+    @Deprecated
+    public boolean updateGlobalConfig(@NonNull String prop, @NonNull String value) {
+        return updateUserConfig(prop, value);
     }
 
     @Synchronized
-    public boolean updateGlobalConfig(@NonNull String prop, @NonNull String value) {
+    public boolean updateUserConfig(@NonNull String prop, @NonNull String value) {
         try {
-            if (value.equals(environmentProperties.get(prop))) {
+            if (value.equals(userProperties.get(prop))) {
                 return false;
             }
 
-            environmentProperties.setProperty(prop, value);
+            userProperties.setProperty(prop, value);
 
-            ENVIRONMENT_CONFIG_FILE.createNewFile();
-            try (OutputStream outputStream = new FileOutputStream(ENVIRONMENT_CONFIG_FILE)) {
-                environmentProperties.store(outputStream, "Modified by Testcontainers");
+            USER_CONFIG_FILE.createNewFile();
+            try (OutputStream outputStream = new FileOutputStream(USER_CONFIG_FILE)) {
+                userProperties.store(outputStream, "Modified by Testcontainers");
             }
 
             // Update internal state only if environment config was successfully updated
-            properties.setProperty(prop, value);
+            userProperties.setProperty(prop, value);
             return true;
         } catch (Exception e) {
-            log.debug("Can't store environment property {} in {}", prop, ENVIRONMENT_CONFIG_FILE);
+            log.debug("Can't store environment property {} in {}", prop, USER_CONFIG_FILE);
             return false;
         }
     }
@@ -228,7 +281,7 @@ public class TestcontainersConfiguration {
     @SneakyThrows(MalformedURLException.class)
     private static TestcontainersConfiguration loadConfiguration() {
         return new TestcontainersConfiguration(
-            readProperties(ENVIRONMENT_CONFIG_FILE.toURI().toURL()),
+            readProperties(USER_CONFIG_FILE.toURI().toURL()),
             Stream
                 .of(
                     TestcontainersConfiguration.class.getClassLoader(),
@@ -240,8 +293,8 @@ public class TestcontainersConfiguration {
                 .reduce(new Properties(), (a, b) -> {
                     a.putAll(b);
                     return a;
-                })
-        );
+                }),
+            System.getenv());
     }
 
     private static Properties readProperties(URL url) {
