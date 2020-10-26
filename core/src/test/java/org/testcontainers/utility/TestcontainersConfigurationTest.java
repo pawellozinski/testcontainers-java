@@ -1,5 +1,6 @@
 package org.testcontainers.utility;
 
+import org.junit.Before;
 import org.junit.Test;
 
 import java.util.HashMap;
@@ -13,9 +14,46 @@ import static org.rnorth.visibleassertions.VisibleAssertions.assertTrue;
 
 public class TestcontainersConfigurationTest {
 
-    final Properties userProperties = new Properties();
-    final Properties classpathProperties = new Properties();
-    final Map<String, String> environment = new HashMap<>();
+    private Properties userProperties;
+    private Properties classpathProperties;
+    private Map<String, String> environment;
+
+    @Before
+    public void setUp() {
+        userProperties = new Properties();
+        classpathProperties = new Properties();
+        environment = new HashMap<>();
+    }
+
+    @Test
+    public void shouldSubstituteImageNamesFromClasspathProperties() {
+        classpathProperties.setProperty("ryuk.container.image", "foo:version");
+        assertEquals(
+            "an image name can be pulled from classpath properties",
+            DockerImageName.parse("foo:version"),
+            newConfig().getConfiguredSubstituteImage(DockerImageName.parse("testcontainers/ryuk:any"))
+        );
+    }
+
+    @Test
+    public void shouldSubstituteImageNamesFromUserProperties() {
+        userProperties.setProperty("ryuk.container.image", "foo:version");
+        assertEquals(
+            "an image name can be pulled from user properties",
+            DockerImageName.parse("foo:version"),
+            newConfig().getConfiguredSubstituteImage(DockerImageName.parse("testcontainers/ryuk:any"))
+        );
+    }
+
+    @Test
+    public void shouldSubstituteImageNamesFromEnvironmentVariables() {
+        environment.put("TESTCONTAINERS_RYUK_CONTAINER_IMAGE", "foo:version");
+        assertEquals(
+            "an image name can be pulled from an environment variable",
+            DockerImageName.parse("foo:version"),
+            newConfig().getConfiguredSubstituteImage(DockerImageName.parse("testcontainers/ryuk:any"))
+        );
+    }
 
     @Test
     public void shouldReadChecksFromUserPropertiesOrEnvironmentOnly() {
